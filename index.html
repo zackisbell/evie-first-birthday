@@ -399,7 +399,7 @@
         </div>
       </div>
 
-      <h1>You're Invited to<br>Evie's<br>First Birthday Party!</h1>
+      <h1>You're Invited To<br>Evie's<br>First Birthday Party!</h1>
 
       <div class="rule">
         <div class="rule-line"></div>
@@ -594,7 +594,7 @@
   <!-- ══ NETLIFY INFO CARD ══ -->
 
 
-  <footer>Made with love for Evie's first birthday &middot; March 23, 2025</footer>
+  <footer>Made with love for Evie's first birthday<br> &middot; March 22, 2025 &middot;</footer>
 </div>
 
 
@@ -624,19 +624,27 @@ function handlePhotoUpload(input) {
   reader.readAsDataURL(input.files[0]);
 }
 
-// ── Storage ──
-async function getGuests() {
-  try {
-    const r = await window.storage.get('evie-rsvp-v3', true);
-    return r ? JSON.parse(r.value) : [];
-  } catch { return []; }
-}
-async function saveGuestsLocal(list) {
-  try { await window.storage.set('evie-rsvp-v3', JSON.stringify(list), true); } catch {}
-}
+// ═══════════════════════════════════════════════════════
+// CONFIGURATION — paste your values here after deploying
+// ═══════════════════════════════════════════════════════
+// 1. Go to app.netlify.com → your site → Site Settings → General
+//    Copy the "Site ID" and paste below
+// 2. Go to app.netlify.com → User Settings → Applications
+//    Click "New access token", name it "evie-rsvp", copy and paste below
+const NETLIFY_SITE_ID  = 'YOUR_SITE_ID_HERE';
+const NETLIFY_TOKEN    = 'YOUR_ACCESS_TOKEN_HERE';
+// ═══════════════════════════════════════════════════════
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── localStorage helpers (instant, works on Netlify) ──
+function getLocalGuests() {
+  try { return JSON.parse(localStorage.getItem('evie-rsvp') || '[]'); } catch { return []; }
+}
+function saveLocalGuests(list) {
+  try { localStorage.setItem('evie-rsvp', JSON.stringify(list)); } catch {}
 }
 
 // ── Submit new RSVP ──
@@ -656,14 +664,12 @@ async function submitRSVP() {
   btn.disabled = true;
   btn.innerHTML = '<span class="dots"><span></span><span></span><span></span></span>';
 
-  // Always re-enable button when done
   const resetBtn = () => {
     btn.disabled = false;
     btn.innerHTML = 'Count Me In';
   };
 
-  let guests = [];
-  try { guests = await getGuests(); } catch { guests = []; }
+  const guests = getLocalGuests();
 
   if (guests.find(g => g.name.toLowerCase() === name.toLowerCase())) {
     err.textContent = `${esc(name)} is already on the list! Use "Edit RSVP" below to make changes.`;
@@ -672,11 +678,11 @@ async function submitRSVP() {
     return;
   }
 
-  // Save locally first — this is what drives the guest list display
+  // Save to localStorage immediately — drives the guest list
   guests.unshift({ name, count, ts: Date.now() });
-  try { await saveGuestsLocal(guests); } catch {}
+  saveLocalGuests(guests);
 
-  // Try Netlify — fire and forget, never block on it
+  // Submit to Netlify Forms — fire and forget
   try {
     const fd = new FormData();
     fd.append('form-name', 'evie-rsvp');
@@ -686,7 +692,6 @@ async function submitRSVP() {
     fetch('/', { method: 'POST', body: fd });
   } catch {}
 
-  // Reset form and show toast
   document.getElementById('rsvpName').value = '';
   document.getElementById('rsvpGuests').value = '';
   const toast = document.getElementById('successToast');
@@ -694,14 +699,14 @@ async function submitRSVP() {
   setTimeout(() => { toast.style.display = 'none'; }, 4000);
   resetBtn();
   launchConfetti();
-  try { await renderGuests(); } catch {}
+  renderGuests();
 }
 
-// ── Edit RSVP — track by name, not index ──
+// ── Edit RSVP ──
 let editingName = null;
 
-async function populateEditDropdown() {
-  const guests = await getGuests();
+function populateEditDropdown() {
+  const guests = getLocalGuests();
   const sel = document.getElementById('editNameSelect');
   const currentVal = sel.value;
   sel.innerHTML = '<option value="">Select your name to edit...</option>';
@@ -711,7 +716,6 @@ async function populateEditDropdown() {
     opt.textContent = `${g.name} (${g.count} guest${parseInt(g.count) !== 1 ? 's' : ''})`;
     sel.appendChild(opt);
   });
-  // Only restore selection if that name still exists
   if (currentVal && guests.find(g => g.name === currentVal)) {
     sel.value = currentVal;
   } else {
@@ -719,12 +723,12 @@ async function populateEditDropdown() {
   }
 }
 
-async function loadEditForm() {
+function loadEditForm() {
   const sel = document.getElementById('editNameSelect');
   const name = sel.value;
   if (!name) return;
 
-  const guests = await getGuests();
+  const guests = getLocalGuests();
   const g = guests.find(x => x.name === name);
   if (!g) return;
 
@@ -744,7 +748,7 @@ function cancelEdit() {
   document.getElementById('cancelConfirm').style.display = 'none';
 }
 
-async function saveEdit() {
+function saveEdit() {
   const newName  = document.getElementById('editName').value.trim();
   const newCount = document.getElementById('editGuests').value;
   const err      = document.getElementById('editErrMsg');
@@ -753,15 +757,14 @@ async function saveEdit() {
   err.style.display = 'none';
   if (!editingName) return;
 
-  const guests = await getGuests();
+  const guests = getLocalGuests();
   const idx = guests.findIndex(g => g.name === editingName);
   if (idx === -1) return;
 
   const oldName = guests[idx].name;
   guests[idx] = { name: newName, count: newCount, ts: guests[idx].ts, edited: Date.now() };
-  await saveGuestsLocal(guests);
+  saveLocalGuests(guests);
 
-  // Fire Netlify in background
   try {
     const fd = new FormData();
     fd.append('form-name', 'evie-rsvp');
@@ -772,29 +775,21 @@ async function saveEdit() {
   } catch {}
 
   cancelEdit();
-  try { await renderGuests(); } catch {}
+  renderGuests();
 }
 
-async function confirmCancelRSVP() {
+function confirmCancelRSVP() {
   if (!editingName) return;
-  let guests = [];
-  try { guests = await getGuests(); } catch { guests = []; }
 
+  const guests = getLocalGuests();
   const idx = guests.findIndex(g => g.name === editingName);
   if (idx === -1) { cancelEdit(); return; }
 
   const name = guests[idx].name;
-
-  // Remove from list and save FIRST before anything else
   guests.splice(idx, 1);
-  try { await saveGuestsLocal(guests); } catch {}
+  saveLocalGuests(guests);
 
-  // Clear editing state and close form immediately
-  editingName = null;
-  document.getElementById('editForm').classList.remove('visible');
-  document.getElementById('cancelConfirm').style.display = 'none';
-
-  // Rebuild dropdown from scratch with updated list
+  // Rebuild dropdown immediately with updated list
   const sel = document.getElementById('editNameSelect');
   sel.innerHTML = '<option value="">Select your name to edit...</option>';
   guests.forEach(g => {
@@ -805,7 +800,10 @@ async function confirmCancelRSVP() {
   });
   sel.value = '';
 
-  // Fire Netlify in background — never await it
+  editingName = null;
+  document.getElementById('editForm').classList.remove('visible');
+  document.getElementById('cancelConfirm').style.display = 'none';
+
   try {
     const fd = new FormData();
     fd.append('form-name', 'evie-rsvp');
@@ -815,13 +813,12 @@ async function confirmCancelRSVP() {
     fetch('/', { method: 'POST', body: fd });
   } catch {}
 
-  // Re-render the guest list
-  try { await renderGuests(); } catch {}
+  renderGuests();
 }
 
 // ── Render guest list ──
-async function renderGuests() {
-  const guests = await getGuests();
+function renderGuests() {
+  const guests = getLocalGuests();
   const list   = document.getElementById('guestList');
   const noG    = document.getElementById('noGuests');
   const total  = guests.reduce((s, g) => s + (parseInt(g.count) || 1), 0);
@@ -853,7 +850,7 @@ async function renderGuests() {
     list.appendChild(el);
   });
 
-  await populateEditDropdown();
+  populateEditDropdown();
 }
 
 // ── Confetti ──
@@ -873,7 +870,6 @@ function launchConfetti() {
 
 // ── Init ──
 renderGuests();
-setInterval(renderGuests, 15000);
 </script>
 </body>
 </html>
