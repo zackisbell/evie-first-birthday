@@ -625,58 +625,55 @@ function handlePhotoUpload(input) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// STEP 1: Go to app.netlify.com → your site → Site Settings → General
-//         Copy "Site ID" and paste between the quotes below
-const NETLIFY_SITE_ID = 'a76554b2-dbd1-428c-a43b-53e988b69c8c';
-
-// STEP 2: Go to app.netlify.com → click your avatar → User Settings
-//         → Applications → "New access token" → copy and paste below
-const NETLIFY_TOKEN = 'nfp_L1WfTJbb5UBqvcXKcDJxyQ9h776Nfeig8ae2';
+// SETUP — takes about 2 minutes:
+// 1. Go to jsonbin.io → sign up free
+// 2. Click "Create a Bin" → paste in just:  []
+//    Make it PUBLIC, click Create
+// 3. Copy the Bin ID from the URL (looks like 6615abc123...)
+//    Paste it below for BIN_ID
+// 4. Click your avatar → API Keys → Create Access Key
+//    Paste it below for API_KEY
+// ═══════════════════════════════════════════════════════════════
+const BIN_ID  = 'Y69a0fde143b1c97be9a21a81';
+const API_KEY = '$2a$10$77pwcjIhpxnHgZfcDz3rjeUM42mIooujdMF94b5YfECEbrq20XeLu';
+const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
 // ═══════════════════════════════════════════════════════════════
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// ── Fetch RSVPs from Netlify Forms API (shared across all devices) ──
-async function fetchNetlifyGuests() {
-  if (NETLIFY_SITE_ID === 'YOUR_SITE_ID_HERE') return [];
+const HEADERS = {
+  'Content-Type': 'application/json',
+  'X-Access-Key': API_KEY
+};
+
+async function loadBin() {
   try {
-    const res = await fetch(
-      `https://api.netlify.com/api/v1/sites/${NETLIFY_SITE_ID}/submissions?form_id=evie-rsvp&per_page=100`,
-      { headers: { Authorization: `Bearer ${NETLIFY_TOKEN}` } }
-    );
+    const res = await fetch(BIN_URL + '/latest', { headers: HEADERS });
     if (!res.ok) return [];
-    const submissions = await res.json();
-    // Only show active RSVPs (not cancelled or edited-away ones)
-    // Build a map: latest entry per name wins
-    const map = new Map();
-    // submissions come newest-first; we want the latest action per name
-    submissions.forEach(s => {
-      const name = s.data && s.data.name;
-      const action = (s.data && s.data.action) || 'new';
-      if (!name) return;
-      const key = name.toLowerCase();
-      if (!map.has(key)) {
-        map.set(key, {
-          name: s.data.name,
-          count: s.data.guests || '1',
-          ts: new Date(s.created_at).getTime(),
-          action
-        });
-      }
-    });
-    // Filter out cancelled entries, return active ones
-    return Array.from(map.values()).filter(g => g.action !== 'cancelled');
+    const data = await res.json();
+    // Support both {rsvps:[]} and [] formats
+    if (data.record && Array.isArray(data.record.rsvps)) return data.record.rsvps;
+    if (Array.isArray(data.record)) return data.record;
+    return [];
   } catch { return []; }
+}
+
+async function saveBin(list) {
+  await fetch(BIN_URL, {
+    method: 'PUT',
+    headers: HEADERS,
+    body: JSON.stringify({ rsvps: list })
+  });
 }
 
 // ── Submit new RSVP ──
 async function submitRSVP() {
-  const name  = document.getElementById('rsvpName').value.trim();
+  const name = document.getElementById('rsvpName').value.trim();
   const count = document.getElementById('rsvpGuests').value;
-  const err   = document.getElementById('errMsg');
-  const btn   = document.getElementById('rsvpBtn');
+  const err = document.getElementById('errMsg');
+  const btn = document.getElementById('rsvpBtn');
 
   if (!name || !count) {
     err.textContent = 'Please fill in both your name and guest count.';
@@ -693,47 +690,49 @@ async function submitRSVP() {
     btn.innerHTML = 'Count Me In';
   };
 
-  // Check for duplicate against live Netlify data
-  const existing = await fetchNetlifyGuests();
-  if (existing.find(g => g.name.toLowerCase() === name.toLowerCase())) {
-    err.textContent = `${esc(name)} is already on the list! Use "Edit RSVP" below to make changes.`;
-    err.style.display = 'block';
-    resetBtn();
-    return;
-  }
-
-  // Submit to Netlify Forms
   try {
-    const fd = new FormData();
-    fd.append('form-name', 'evie-rsvp');
-    fd.append('name', name);
-    fd.append('guests', count);
-    fd.append('action', 'new');
-    const res = await fetch('/', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error('Form submit failed');
+    const guests = await loadBin();
+
+    if (guests.find(g => g.name.toLowerCase() === name.toLowerCase())) {
+      err.textContent = `${esc(name)} is already on the list! Use "Edit RSVP" below to make changes.`;
+      err.style.display = 'block';
+      resetBtn();
+      return;
+    }
+
+    guests.unshift({ name, count, ts: Date.now() });
+    await saveBin(guests);
+
+    // Also log to Netlify Forms as a backup record
+    try {
+      const fd = new FormData();
+      fd.append('form-name', 'evie-rsvp');
+      fd.append('name', name);
+      fd.append('guests', count);
+      fd.append('action', 'new');
+      fetch('/', { method: 'POST', body: fd });
+    } catch {}
+
+    document.getElementById('rsvpName').value = '';
+    document.getElementById('rsvpGuests').value = '';
+    const toast = document.getElementById('successToast');
+    toast.style.display = 'block';
+    setTimeout(() => { toast.style.display = 'none'; }, 4000);
+    resetBtn();
+    launchConfetti();
+    await renderGuests();
   } catch {
-    err.textContent = 'Something went wrong submitting — please try again.';
+    err.textContent = 'Something went wrong — please try again.';
     err.style.display = 'block';
     resetBtn();
-    return;
   }
-
-  document.getElementById('rsvpName').value = '';
-  document.getElementById('rsvpGuests').value = '';
-  const toast = document.getElementById('successToast');
-  toast.style.display = 'block';
-  setTimeout(() => { toast.style.display = 'none'; }, 4000);
-  resetBtn();
-  launchConfetti();
-  // Small delay so Netlify has time to index the submission
-  setTimeout(() => renderGuests(), 1200);
 }
 
 // ── Edit RSVP ──
 let editingName = null;
 
 async function populateEditDropdown() {
-  const guests = await fetchNetlifyGuests();
+  const guests = await loadBin();
   const sel = document.getElementById('editNameSelect');
   const currentVal = sel.value;
   sel.innerHTML = '<option value="">Select your name to edit...</option>';
@@ -754,11 +753,9 @@ async function loadEditForm() {
   const sel = document.getElementById('editNameSelect');
   const name = sel.value;
   if (!name) return;
-
-  const guests = await fetchNetlifyGuests();
+  const guests = await loadBin();
   const g = guests.find(x => x.name === name);
   if (!g) return;
-
   editingName = g.name;
   document.getElementById('editFormTitle').textContent = `Editing RSVP for ${g.name}`;
   document.getElementById('editName').value = g.name;
@@ -776,64 +773,67 @@ function cancelEdit() {
 }
 
 async function saveEdit() {
-  const newName  = document.getElementById('editName').value.trim();
+  const newName = document.getElementById('editName').value.trim();
   const newCount = document.getElementById('editGuests').value;
-  const err      = document.getElementById('editErrMsg');
-
+  const err = document.getElementById('editErrMsg');
   if (!newName || !newCount) { err.style.display = 'block'; return; }
   err.style.display = 'none';
   if (!editingName) return;
 
-  // Submit edit as a new form entry — Netlify logs it, our fetch logic picks latest per name
   try {
-    const fd = new FormData();
-    fd.append('form-name', 'evie-rsvp');
-    fd.append('name', newName);
-    fd.append('guests', newCount);
-    fd.append('action', `edit (was: ${editingName})`);
-    await fetch('/', { method: 'POST', body: fd });
+    const guests = await loadBin();
+    const idx = guests.findIndex(g => g.name === editingName);
+    if (idx === -1) return;
+    guests[idx] = { name: newName, count: newCount, ts: guests[idx].ts, edited: Date.now() };
+    await saveBin(guests);
+    cancelEdit();
+    await renderGuests();
   } catch {}
-
-  cancelEdit();
-  setTimeout(() => renderGuests(), 1200);
 }
 
 async function confirmCancelRSVP() {
   if (!editingName) return;
-  const name = editingName;
-
-  // Submit cancellation to Netlify Forms
   try {
-    const fd = new FormData();
-    fd.append('form-name', 'evie-rsvp');
-    fd.append('name', name);
-    fd.append('guests', '0');
-    fd.append('action', 'cancelled');
-    await fetch('/', { method: 'POST', body: fd });
-  } catch {}
+    const guests = await loadBin();
+    const idx = guests.findIndex(g => g.name === editingName);
+    if (idx === -1) { cancelEdit(); return; }
+    guests.splice(idx, 1);
+    await saveBin(guests);
 
-  cancelEdit();
-  setTimeout(() => renderGuests(), 1200);
+    const sel = document.getElementById('editNameSelect');
+    sel.innerHTML = '<option value="">Select your name to edit...</option>';
+    guests.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.name;
+      opt.textContent = `${g.name} (${g.count} guest${parseInt(g.count) !== 1 ? 's' : ''})`;
+      sel.appendChild(opt);
+    });
+    sel.value = '';
+    editingName = null;
+    document.getElementById('editForm').classList.remove('visible');
+    document.getElementById('cancelConfirm').style.display = 'none';
+    await renderGuests();
+  } catch {}
 }
 
 // ── Render guest list ──
 async function renderGuests() {
-  const guests = await fetchNetlifyGuests();
-  const list   = document.getElementById('guestList');
-  const noG    = document.getElementById('noGuests');
-  const total  = guests.reduce((s, g) => s + (parseInt(g.count) || 1), 0);
+  const guests = await loadBin();
+  const list = document.getElementById('guestList');
+  const noG = document.getElementById('noGuests');
+  const total = guests.reduce((s, g) => s + (parseInt(g.count) || 1), 0);
 
   document.getElementById('cNum').textContent = guests.length;
   if (guests.length === 0) {
     document.getElementById('cPeople').textContent = 'No RSVPs yet';
-    document.getElementById('cTotal').textContent  = 'Be the first to join the party!';
+    document.getElementById('cTotal').textContent = 'Be the first to join the party!';
   } else {
     document.getElementById('cPeople').textContent = guests.length === 1 ? '1 family RSVPed' : `${guests.length} families RSVPed`;
-    document.getElementById('cTotal').textContent  = `${total} total guest${total !== 1 ? 's' : ''} attending`;
+    document.getElementById('cTotal').textContent = `${total} total guest${total !== 1 ? 's' : ''} attending`;
   }
 
   Array.from(list.children).forEach(el => { if (el.id !== 'noGuests') el.remove(); });
-  if (guests.length === 0) { noG.style.display = 'block'; populateEditDropdown(); return; }
+  if (guests.length === 0) { noG.style.display = 'block'; await populateEditDropdown(); return; }
   noG.style.display = 'none';
 
   guests.forEach((g, i) => {
@@ -843,7 +843,7 @@ async function renderGuests() {
     el.innerHTML = `
       <div class="g-num">${i + 1}</div>
       <div>
-        <div class="g-name">${esc(g.name)}</div>
+        <div class="g-name">${esc(g.name)}${g.edited ? '<span style="font-size:10px;color:var(--gold);margin-left:6px;font-style:italic;">edited</span>' : ''}</div>
         <div class="g-count">${g.count} guest${parseInt(g.count) !== 1 ? 's' : ''} attending</div>
       </div>
       <div class="g-time">${ts}</div>`;
